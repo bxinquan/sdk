@@ -77,7 +77,7 @@ static crc_polynomial_t polynomial[] = {
 
 
 // Most significant bit first(Big-endian)
-void crc32_msb_init()
+void crc32_msb_init(void)
 {
 	int val, i;
 	unsigned int rem;
@@ -110,7 +110,7 @@ unsigned int crc32_msb(unsigned int crc, const unsigned char *buffer, unsigned i
 
 // Least significant bit first(Little-endian)
 // http://www.w3.org/TR/PNG/#D-CRCAppendix
-void crc32_lsb_init()
+void crc32_lsb_init(void)
 {
 	int val, i;
 	unsigned int rem;
@@ -137,7 +137,7 @@ unsigned int crc32_lsb(unsigned int crc, const unsigned char *buffer, unsigned i
 	for (i = 0; i < size; i++) {
 		crc = crc32lsbtable[(crc ^ buffer[i]) & 0xff] ^ (crc >> 8);  
 	} 
-	return crc ;  
+	return crc ^ 0xFFFFFFFF;
 }
 
 unsigned int crc32(unsigned int crc, const unsigned char *buffer, unsigned int size)  

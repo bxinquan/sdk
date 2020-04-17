@@ -29,7 +29,7 @@ struct aio_socket_ptr_t
 	void* param;
 
 	socket_bufvec_t* vec;
-	size_t count;
+	int count;
 
 	socket_bufvec_t __vec[1];
 	size_t __n; // reserved internal use, don't change it value
@@ -37,7 +37,8 @@ struct aio_socket_ptr_t
 
 static void aio_socket_onrecv_v(void* param, int code, size_t bytes)
 {
-	size_t i, n;
+	int i;
+	size_t n;
 	struct aio_socket_ptr_t* ptr;
 	ptr = (struct aio_socket_ptr_t*)param;
 	if (0 == code)
@@ -75,7 +76,8 @@ static void aio_socket_onrecv_v(void* param, int code, size_t bytes)
 
 static void aio_socket_onsend_v(void* param, int code, size_t bytes)
 {
-	size_t i, n;
+	int i;
+	size_t n;
 	struct aio_socket_ptr_t* ptr;
 	ptr = (struct aio_socket_ptr_t*)param;
 	if (0 == code)

@@ -24,7 +24,7 @@ struct http_sendfile_t
 	FILE* fp;
 	size_t capacity;
 	size_t bytes;
-	size_t sent;
+	int64_t sent;
 	int64_t total;
 	uint8_t* ptr;
 };
@@ -42,7 +42,7 @@ static struct http_sendfile_t* http_file_open(const char* filename)
 		return NULL;
 
 	capacity = (size_t)(size < N_SENDFILE ? size : N_SENDFILE);
-	sendfile = (struct http_sendfile_t*)malloc(sizeof(*sendfile) + capacity + 10);
+	sendfile = (struct http_sendfile_t*)malloc(sizeof(*sendfile) + capacity + 10 /*chunk*/ + 5 /*last chunk*/);
 	if (NULL == sendfile)
 	{
 		fclose(fp);
@@ -70,34 +70,17 @@ static void http_file_close(struct http_sendfile_t* sendfile)
 
 static void http_file_read(struct http_sendfile_t* sendfile)
 {
-	size_t size;
+    size_t size;
 	static const char* hex = "0123456789ABCDEF";
 
-	size = (size_t)(sendfile->total > sendfile->capacity ? sendfile->capacity : sendfile->total);
+    size = (sendfile->total - sendfile->sent) > (int64_t)sendfile->capacity ? sendfile->capacity : (size_t)(sendfile->total - sendfile->sent);
 
-	if (1 == sendfile->session->http_transfer_encoding_flag)
+    if (1 == sendfile->session->http_transfer_encoding_flag)
 	{
 		sendfile->bytes = fread(sendfile->ptr + 8, 1, size, sendfile->fp);
 		sendfile->sent += sendfile->bytes;
 
-		if (0 == sendfile->bytes)
-		{
-			// last-chunk
-			sendfile->ptr[0] = 0; // length
-			sendfile->ptr[1] = 0;
-			sendfile->ptr[2] = 0;
-			sendfile->ptr[3] = 0;
-			sendfile->ptr[4] = 0;
-			sendfile->ptr[5] = 0;
-			sendfile->ptr[6] = '\r';
-			sendfile->ptr[7] = '\n';
-
-			// \r\n
-			sendfile->ptr[8] = '\r';
-			sendfile->ptr[9] = '\n';
-			sendfile->bytes = 10;
-		}
-		else
+        if (sendfile->bytes > 0)
 		{
 			// chunk
 			assert(sendfile->bytes < (1 << 24));
@@ -113,10 +96,25 @@ static void http_file_read(struct http_sendfile_t* sendfile)
 			sendfile->ptr[sendfile->bytes + 9] = '\n';
 			sendfile->bytes += 10;
 		}
+
+        if (0 == sendfile->bytes || sendfile->sent == sendfile->total)
+        {
+            assert(0 != sendfile->bytes || feof(sendfile->fp));
+
+            // last-chunk
+            sendfile->ptr[sendfile->bytes + 0] = '0'; // length
+            sendfile->ptr[sendfile->bytes + 1] = '\r';
+            sendfile->ptr[sendfile->bytes + 2] = '\n';
+
+            // \r\n
+            sendfile->ptr[sendfile->bytes + 3] = '\r';
+            sendfile->ptr[sendfile->bytes + 4] = '\n';
+            sendfile->bytes += 5;
+        }
 	}
 	else
 	{
-		sendfile->bytes = fread(sendfile->ptr, 1, sendfile->capacity, sendfile->fp);
+		sendfile->bytes = fread(sendfile->ptr, 1, size, sendfile->fp);
 		sendfile->sent += sendfile->bytes;
 	}
 }
@@ -146,9 +144,11 @@ static int http_server_onsendfile(void* param, int code, size_t bytes)
 		if (sendfile->onsend)
 			sendfile->onsend(sendfile->param, code, 0);
 		http_file_close(sendfile);
+		assert(1 != code);
+		return code;
 	}
 
-	return code;
+	return 1; // HACK: has more data to send
 }
 
 static int http_session_range(struct http_sendfile_t* sendfile)
@@ -160,7 +160,7 @@ static int http_session_range(struct http_sendfile_t* sendfile)
 	prange = http_server_get_header(sendfile->session, "Range");
 	if (prange)
 	{
-		n = http_header_range(prange, range, 3);
+		n = http_header_range(prange, range, sizeof(range)/sizeof(range[0]));
 		if (1 != n || 0 == sendfile->total)
 			return -1;
 

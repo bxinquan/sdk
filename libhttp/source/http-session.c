@@ -16,7 +16,7 @@
 #define HTTP_RECV_BUFFER (2*1024)
 
 static socket_bufvec_t* socket_bufvec_alloc(struct http_session_t *session, int count);
-static int http_session_data(struct http_session_t *session, const struct http_vec_t* vec, size_t num);
+static int http_session_data(struct http_session_t *session, const struct http_vec_t* vec, int num);
 
 static const char* s_http_header_end = "\r\n";
 
@@ -65,13 +65,16 @@ static void http_session_onrecv(void* param, int code, size_t bytes)
 {
 	struct http_session_t *session;
 	session = (struct http_session_t *)param;
-	session->remain = 0 == code ? bytes : 0;
+	session->remain = 0 == code ? (int)bytes : 0;
 
 	if (0 == code)
 	{
 		code = http_parser_input(session->parser, session->data, &session->remain);
 		if (0 == code)
 		{
+			// wait for next recv
+			atomic_cas_ptr(&session->rlocker, session, NULL);
+
 			// http pipeline remain data
 			assert(bytes > session->remain);
 			if (session->remain > 0 && bytes > session->remain)
@@ -112,14 +115,18 @@ static void http_session_onsend(void* param, int code, size_t bytes)
 	session->vec_count = 0;
 	session->vec = NULL;
 	if (session->onsend)
+	{
 		r = session->onsend(session->onsendparam, code, bytes);
+		if (1 == r)
+			return; // HACK: has more data to send(such as sendfile)
+	}
 
 	if (0 == r && 0 == code)
 	{
 		http_parser_clear(session->parser); // reset parser
 		if (session->remain > 0)
 			http_session_onrecv(session, 0, session->remain); // next round
-		else
+		else if(atomic_cas_ptr(&session->rlocker, NULL, session))
 			r = aio_tcp_transport_recv(session->transport, session->data, HTTP_RECV_BUFFER);
 	}
 
@@ -143,10 +150,11 @@ int http_session_create(struct http_server_t *server, socket_t socket, const str
 	session->header = (char*)(session + 1);
 	session->header_capacity = 2 * 1024;
 	session->data = session->header + session->header_capacity;
-	session->parser = http_parser_create(HTTP_PARSER_SERVER);
+	session->parser = http_parser_create(HTTP_PARSER_REQUEST, NULL, NULL);
 	assert(AF_INET == sa->sa_family || AF_INET6 == sa->sa_family);
 	assert(salen <= sizeof(session->addr));
 	memcpy(&session->addr, sa, salen);
+	session->rlocker = session;
 	session->addrlen = salen;
 	session->socket = socket;
 	session->param = server->param;
@@ -168,7 +176,7 @@ int http_server_send(struct http_session_t *session, int code, const void* data,
 	return http_server_send_vec(session, code, &vec, 1, onsend, param);
 }
 
-int http_server_send_vec(struct http_session_t *session, int code, const struct http_vec_t* vec, size_t num, http_server_onsend onsend, void* param)
+int http_server_send_vec(struct http_session_t *session, int code, const struct http_vec_t* vec, int num, http_server_onsend onsend, void* param)
 {
 	int r;
 	char content_length[32];
@@ -213,16 +221,16 @@ static socket_bufvec_t* socket_bufvec_alloc(struct http_session_t *session, int 
 	return session->__vec;
 }
 
-static int http_session_data(struct http_session_t *session, const struct http_vec_t* vec, size_t num)
+static int http_session_data(struct http_session_t *session, const struct http_vec_t* vec, int num)
 {
-	size_t i;
+	int i;
 	int len = 0;
 
 	// multi-thread onrecv maybe before onsend
 	assert(NULL == session->vec);
 	assert(0 == session->vec_count);
 	session->vec = socket_bufvec_alloc(session, num + 3);
-	if (!session->vec || num < 0)
+	if (!session->vec || num < 1)
 		return -1;
 
 	// HTTP Response Data

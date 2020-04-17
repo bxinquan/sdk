@@ -34,7 +34,6 @@ enum ESERIAL_FLOWCONTROL
 };
 
 /// @param[in] name serial name, etc. /dev/ttyS0 or COM1 or \\.\COM10
-/// @param[in] block 1-block, 0-nonblock
 /// @return NULL-error, other-ok
 void* serial_port_open(const char *name);
 
@@ -43,8 +42,8 @@ int serial_port_close(void* port);
 /// @return 0-ok, other-error
 int serial_port_flush(void* port);
 
-/// @param[in] parity: 0-no parity, 1-even parity, 2-odd parity, 3-space parity, 4-mark parity
-/// @param[in] stopbits: 0-1 stop bits, 1-1.5 stop bits, 2-2 stop bits
+/// @param[in] parity 0-no parity, 1-even parity, 2-odd parity, 3-space parity, 4-mark parity
+/// @param[in] stopbits 0-1 stop bits, 1-1.5 stop bits, 2-2 stop bits
 /// @return 0-ok, other-error
 int serial_port_setattr(void* port, int baudrate, int databits, int parity, int stopbits, int flowctrl);
 //int serial_port_getattr(void* port, int *baudrate, int *databits, int *parity, int *stopbits, int *flowctrl);

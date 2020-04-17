@@ -1,8 +1,11 @@
 #include "port/network.h"
 
 #if defined(_WIN32) || defined(_WIN64)
-#include <Windows.h>
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#include <Winsock2.h>
+#include <WS2tcpip.h>
 #include <IPHlpApi.h>
+#include <Windows.h>
 
 #pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "Iphlpapi.lib")
@@ -22,7 +25,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#if !defined(OS_MAC)
 #include <netpacket/packet.h>
+#endif
 #include <net/if.h>
 #include <ifaddrs.h>
 #include <netdb.h>
@@ -47,53 +52,134 @@
 //	return -1;
 //}
 
+#if 0
 int network_getip(network_getip_fcb fcb, void* param)
 {
 	UINT i = 0;
 	ULONG ulOutBufLen;
 	DWORD dwRetVal = 0;
+	IP_ADDR_STRING *addr;
 	PIP_ADAPTER_INFO pAdapter, pAdapterInfo;
 	char hwaddr[MAX_ADAPTER_ADDRESS_LENGTH*3] = {0};
 
 	// Make an initial call to GetAdaptersInfo to get
 	// the necessary size into the ulOutBufLen variable
 	ulOutBufLen = sizeof(IP_ADAPTER_INFO);
-	pAdapterInfo = (IP_ADAPTER_INFO *)malloc(ulOutBufLen);
+	pAdapterInfo = (PIP_ADAPTER_INFO)malloc(ulOutBufLen);
 	if (GetAdaptersInfo( pAdapterInfo, &ulOutBufLen) == ERROR_BUFFER_OVERFLOW) 
 	{
 		free(pAdapterInfo);
-		pAdapterInfo = (IP_ADAPTER_INFO *) malloc (ulOutBufLen); 
+		pAdapterInfo = (PIP_ADAPTER_INFO) malloc (ulOutBufLen);
 	}
 
 	if ((dwRetVal = GetAdaptersInfo( pAdapterInfo, &ulOutBufLen)) == ERROR_SUCCESS)
 	{
-		pAdapter = pAdapterInfo;
-		while(pAdapter)
+		for(pAdapter = pAdapterInfo; pAdapter; pAdapter = pAdapter->Next)
 		{
-			if(MIB_IF_TYPE_ETHERNET==pAdapter->Type || IF_TYPE_IEEE80211==pAdapter->Type)
-			{
-				// mac address
-				for(i=0; i<pAdapter->AddressLength; i++)
-				{
-					if(i > 0) hwaddr[i*3-1] = ':';
-					sprintf(hwaddr+i*3, "%02X", (int)pAdapter->Address[i]);
-				}
+			if(IF_TYPE_ETHERNET_CSMACD!=pAdapter->Type && IF_TYPE_IEEE80211!=pAdapter->Type)
+				continue;
 
-				fcb(param, 
+			// mac address
+			for(i=0; i<pAdapter->AddressLength; i++)
+			{
+				if(i > 0) hwaddr[i*3-1] = ':';
+				sprintf(hwaddr+i*3, "%02X", (int)pAdapter->Address[i]);
+			}
+
+			for (addr = &pAdapter->IpAddressList; addr; addr = addr->Next)
+			{
+				fcb(param,
 					hwaddr,										// mac address
 					pAdapter->AdapterName,						// name
-					0==pAdapter->DhcpEnabled?0:1,				// dhcp
-					pAdapter->IpAddressList.IpAddress.String,	// ip address
-					pAdapter->IpAddressList.IpMask.String,		// netmask
+					0 == pAdapter->DhcpEnabled ? 0 : 1,			// dhcp
+					addr->IpAddress.String,						// ip address
+					addr->IpMask.String,						// netmask
 					pAdapter->GatewayList.IpAddress.String);	// gateway
 			}
-			pAdapter = pAdapter->Next;
 		}
 	}
 
 	free(pAdapterInfo);
 	return dwRetVal==ERROR_SUCCESS?0:-(int)dwRetVal;
 }
+#else
+int network_getip(network_getip_fcb fcb, void* param)
+{
+	UINT i = 0;
+	ULONG ulOutBufLen;
+	DWORD dwRetVal = 0;
+	IN_ADDR netmask;
+	PIP_ADAPTER_UNICAST_ADDRESS_LH addr;
+	PIP_ADAPTER_ADDRESSES pAdapter, pAdapterInfo;
+	char hwaddr[MAX_ADAPTER_ADDRESS_LENGTH * 3] = { 0 };
+	char ip[65] = { 0 };
+	char subnet[65] = { 0 };
+	char gateway[65] = { 0 };
+	char description[128] = { 0 };
+
+	// Make an initial call to GetAdaptersInfo to get
+	// the necessary size into the ulOutBufLen variable
+	ulOutBufLen = sizeof(IP_ADAPTER_ADDRESSES);
+	pAdapterInfo = (PIP_ADAPTER_ADDRESSES)malloc(ulOutBufLen);
+	if (GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_GATEWAYS, NULL, pAdapterInfo, &ulOutBufLen) == ERROR_BUFFER_OVERFLOW)
+	{
+		free(pAdapterInfo);
+		pAdapterInfo = (PIP_ADAPTER_ADDRESSES)malloc(ulOutBufLen);
+	}
+
+	if ((dwRetVal = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_GATEWAYS, NULL, pAdapterInfo, &ulOutBufLen)) == ERROR_SUCCESS)
+	{
+		for (pAdapter = pAdapterInfo; pAdapter; pAdapter = pAdapter->Next)
+		{
+			if (IfOperStatusUp != pAdapter->OperStatus)
+				continue;
+			if (IF_TYPE_ETHERNET_CSMACD != pAdapter->IfType && IF_TYPE_IEEE80211 != pAdapter->IfType)
+				continue;
+
+			memset(description, 0, sizeof(description));
+			WideCharToMultiByte(CP_UTF8, 0, pAdapter->Description, -1, description, sizeof(description) - 1, NULL, NULL);
+
+			// mac address
+			for (i = 0; i < pAdapter->PhysicalAddressLength; i++)
+			{
+				if (i > 0) hwaddr[i * 3 - 1] = ':';
+				sprintf(hwaddr + i * 3, "%02X", (int)pAdapter->PhysicalAddress[i]);
+			}
+
+			if (pAdapter->FirstGatewayAddress && AF_INET == pAdapter->FirstGatewayAddress->Address.lpSockaddr->sa_family)
+				inet_ntop(AF_INET, &((struct sockaddr_in*)pAdapter->FirstGatewayAddress->Address.lpSockaddr)->sin_addr, gateway, sizeof(gateway));
+			else if (pAdapter->FirstGatewayAddress && AF_INET6 == AF_INET == pAdapter->FirstGatewayAddress->Address.lpSockaddr->sa_family)
+				inet_ntop(AF_INET6, &((struct sockaddr_in6*)pAdapter->FirstGatewayAddress->Address.lpSockaddr)->sin6_addr, gateway, sizeof(gateway));
+			else
+				memset(gateway, 0, sizeof(gateway));
+
+			for (addr = pAdapter->FirstUnicastAddress; addr; addr = addr->Next)
+			{
+				if (AF_INET == addr->Address.lpSockaddr->sa_family)
+				{
+					ConvertLengthToIpv4Mask(addr->OnLinkPrefixLength, &netmask.s_addr);
+					inet_ntop(AF_INET, &netmask, subnet, sizeof(subnet));
+					inet_ntop(AF_INET, &((struct sockaddr_in*)addr->Address.lpSockaddr)->sin_addr, ip, sizeof(ip));
+				}
+				else if (AF_INET6 == addr->Address.lpSockaddr->sa_family)
+				{
+					memset(subnet, 0, sizeof(subnet));
+					inet_ntop(AF_INET6, &((struct sockaddr_in6*)addr->Address.lpSockaddr)->sin6_addr, ip, sizeof(ip));
+				}
+				else
+				{
+					continue;
+				}
+
+				fcb(param, hwaddr, description[0] ? description : pAdapter->AdapterName, pAdapter->Dhcpv4Enabled, ip, subnet, gateway);
+			}
+		}
+	}
+
+	free(pAdapterInfo);
+	return dwRetVal == ERROR_SUCCESS ? 0 : -(int)dwRetVal;
+}
+#endif
 
 typedef int (CALLBACK* DNSFLUSHPROC)();
 typedef int (CALLBACK* DHCPNOTIFYPROC)(LPWSTR, LPWSTR, BOOL, DWORD, DWORD, DWORD, int);
@@ -172,7 +258,7 @@ int network_setip(const char* name, int enableDHCP, const char* ipaddr, const ch
 	return 0;
 }
 
-int network_getdns(const char* name, char primary[40], char secondary[40])
+int network_getdns(const char* name, char primary[65], char secondary[65])
 {
 	ULONG idx = 0;
 	DWORD dwRetVal = 0;
@@ -235,7 +321,7 @@ int network_setdns(const char* name, const char* primary, const char *secondary)
 	return 0;
 }
 
-int network_getgateway(char* gateway, int len)
+int network_getgateway(char gateway[65])
 {
 	// http://msdn.microsoft.com/en-us/library/aa373798%28v=VS.85%29.aspx
 	return -1;
@@ -249,11 +335,10 @@ int network_setgateway(const char* gateway)
 
 #else
 
-int network_getgateway(char* gateway, int len)
+int network_getgateway(char gateway[65])
 {
 	FILE* fp;
 	char buffer[512];
-	const char* p;
 
 	fp = popen("ip route", "r");
 	if(!fp)
@@ -261,12 +346,8 @@ int network_getgateway(char* gateway, int len)
 
 	while(fgets(buffer, sizeof(buffer), fp))
 	{
-		p += strspn(buffer, " \r\n");
-		if(0 == strncmp("default ", p, 8))
-		{
-			sscanf(p, "%*s %*s %s", gateway);
+		if(1 == sscanf(buffer, "default via %65s dev %*s", gateway))
 			break;
-		}
 	}
 	pclose(fp);
 	return 0;
@@ -278,9 +359,9 @@ int network_setgateway(const char* gateway)
 	char buffer[128];
 
 	strcpy(buffer, "route del default gw ");
-	r = strlen(buffer);
+	r = (int)strlen(buffer);
 
-	r = network_getgateway(buffer+r, sizeof(buffer)-r);
+	r = network_getgateway(buffer+r);
 	if(0 == r)
 	{
 		system(buffer);
@@ -309,7 +390,7 @@ int network_getip(network_getip_fcb fcb, void* param)
 	char hwaddr[20];	
 	char ipaddr[32];
 	char netmask[32];
-	char gateway[32];
+	char gateway[65];
 
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if(fd < 0)
@@ -348,7 +429,7 @@ int network_getip(network_getip_fcb fcb, void* param)
 		ipaddr2str(netmask, (struct sockaddr_in*)&req[i].ifr_netmask);
 
 		memset(gateway, 0, sizeof(gateway));
-		network_getgateway(gateway, sizeof(gateway));
+		network_getgateway(gateway);
 		fcb(param, hwaddr, req[i].ifr_name, 0, ipaddr, netmask, gateway);
 	}
 
@@ -357,6 +438,7 @@ int network_getip(network_getip_fcb fcb, void* param)
 }
 
 #else
+#if !defined(OS_MAC)
 static int network_getmac(const struct ifaddrs *ifaddr, const char* ifname, char hwaddr[20])
 {
 	const struct ifaddrs *ifa = NULL;
@@ -381,15 +463,16 @@ static int network_getmac(const struct ifaddrs *ifaddr, const char* ifname, char
 	}
 	return -1;
 }
+#endif
 
 int network_getip(network_getip_fcb fcb, void* param)
 {
 	char hwaddr[20];	
-	char ipaddr[32] ,netmask[32], gateway[32];
+	char ipaddr[32] ,netmask[32], gateway[65];
 	struct ifaddrs *ifaddr, *ifa;
 
 	memset(gateway, 0, sizeof(gateway));
-	network_getgateway(gateway, sizeof(gateway));
+	network_getgateway(gateway);
 
 	if(0 != getifaddrs(&ifaddr))
 		return errno;
@@ -408,7 +491,9 @@ int network_getip(network_getip_fcb fcb, void* param)
 		ipaddr2str(netmask, (struct sockaddr_in*)ifa->ifa_netmask);
 
 		memset(hwaddr, 0, sizeof(hwaddr));
+#if !defined(OS_MAC)
 		network_getmac(ifaddr, ifa->ifa_name, hwaddr);
+#endif
 
 		fcb(param, hwaddr, ifa->ifa_name, 0, ipaddr, netmask, gateway);
 	}
@@ -532,7 +617,7 @@ static int network_getdns_handle(const char* str, int strLen, va_list val)
 	return 0;
 }
 
-int network_getdns(const char* name, char primary[40], char secondary[40])
+int network_getdns(const char* name, char primary[65], char secondary[65])
 {
 	int r;
 	char content[1024*2] = {0};

@@ -14,7 +14,13 @@ else
 	BUILD:=debug
 endif
 
-DEFINES += OS_LINUX
+KERNEL := $(shell uname -s)
+ifeq ($(KERNEL),Linux)
+	DEFINES += OS_LINUX
+endif
+ifeq ($(KERNEL),Darwin)
+	DEFINES += OS_MAC
+endif
 
 #--------------------------------Compile-----------------------------
 #
@@ -32,6 +38,7 @@ ifeq ($(RELEASE),1)
 	DEFINES += NDEBUG
 else
 	CFLAGS += -g -Wall
+#	CFLAGS += -fsanitize=address
 	CXXFLAGS += $(CFLAGS)
 	DEFINES += DEBUG _DEBUG
 endif
@@ -66,7 +73,7 @@ ifeq ($(OUTTYPE),0)
 	$(CXX) -o $@ -Wl,-rpath . $(LDFLAGS) $^ $(addprefix -L,$(LIBPATHS)) $(addprefix -l,$(LIBS))
 else
 ifeq ($(OUTTYPE),1)
-	$(CXX) -o $@ -shared -fpic -rdynamic -Wl,-rpath . $(LDFLAGS) $^ $(addprefix -L,$(LIBPATHS)) $(addprefix -l,$(LIBS))
+	$(CXX) -o $@ -shared -fPIC -rdynamic -Wl,-rpath . $(LDFLAGS) $^ $(addprefix -L,$(LIBPATHS)) $(addprefix -l,$(LIBS))
 else
 	$(AR) -rc $@ $^
 endif

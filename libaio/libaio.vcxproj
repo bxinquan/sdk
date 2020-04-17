@@ -100,9 +100,10 @@
     <ClCompile>
       <PrecompiledHeader>
       </PrecompiledHeader>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;LIBAIO_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;LIBAIO_EXPORTS;OS_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>include;../include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -130,13 +131,14 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <PrecompiledHeader>
       </PrecompiledHeader>
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;LIBAIO_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;LIBAIO_EXPORTS;OS_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>include;../include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -150,6 +152,7 @@
     <ClCompile Include="..\source\twtimer.c" />
     <ClCompile Include="src\aio-accept.c" />
     <ClCompile Include="src\aio-client.c" />
+    <ClCompile Include="src\aio-poll.c" />
     <ClCompile Include="src\aio-recv.c" />
     <ClCompile Include="src\aio-rwutil.c" />
     <ClCompile Include="src\aio-connect.c" />
@@ -161,6 +164,7 @@
   <ItemGroup>
     <ClInclude Include="..\include\aio-socket.h" />
     <ClInclude Include="include\aio-accept.h" />
+    <ClInclude Include="include\aio-poll.h" />
     <ClInclude Include="include\aio-recv.h" />
     <ClInclude Include="include\aio-rwutil.h" />
     <ClInclude Include="include\aio-connect.h" />

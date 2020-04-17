@@ -24,10 +24,20 @@ typedef WSABUF	socket_bufvec_t;
 #define SHUT_RD SD_RECEIVE
 #define SHUT_WR SD_SEND
 #define SHUT_RDWR SD_BOTH
+
+// IPv6 MTU
+#ifndef IPV6_MTU_DISCOVER
+	#define IPV6_MTU_DISCOVER	71
+	#define IP_PMTUDISC_DO		1
+	#define IP_PMTUDISC_DONT	2
+#endif
+
 #else
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -97,10 +107,10 @@ static inline int socket_sendto(IN socket_t sock, IN const void* buf, IN size_t 
 static inline int socket_recvfrom(IN socket_t sock, OUT void* buf, IN size_t len, IN int flags, OUT struct sockaddr* from, OUT socklen_t* fromlen);
 
 // @return >0-sent/received bytes, <0-socket_error(by socket_geterror()), 0-peer shutdown(recv only)
-static inline int socket_send_v(IN socket_t sock, IN const socket_bufvec_t* vec, IN size_t n, IN int flags);
-static inline int socket_recv_v(IN socket_t sock, IN socket_bufvec_t* vec, IN size_t n, IN int flags);
-static inline int socket_sendto_v(IN socket_t sock, IN const socket_bufvec_t* vec, IN size_t n, IN int flags, IN const struct sockaddr* to, IN socklen_t tolen);
-static inline int socket_recvfrom_v(IN socket_t sock, IN socket_bufvec_t* vec, IN size_t n, IN int flags, IN struct sockaddr* from, IN socklen_t* fromlen);
+static inline int socket_send_v(IN socket_t sock, IN const socket_bufvec_t* vec, IN int n, IN int flags);
+static inline int socket_recv_v(IN socket_t sock, IN socket_bufvec_t* vec, IN int n, IN int flags);
+static inline int socket_sendto_v(IN socket_t sock, IN const socket_bufvec_t* vec, IN int n, IN int flags, IN const struct sockaddr* to, IN socklen_t tolen);
+static inline int socket_recvfrom_v(IN socket_t sock, IN socket_bufvec_t* vec, IN int n, IN int flags, IN struct sockaddr* from, IN socklen_t* fromlen);
 
 // Linux: 1. select may update the timeout argument to indicate how much time was left
 //        2. This interval will be rounded up to the system clock granularity, and kernel scheduling delays mean that the blocking interval may overrun by a small amount.
@@ -132,11 +142,30 @@ static inline int socket_setrecvtimeout(IN socket_t sock, IN size_t seconds); //
 static inline int socket_getrecvtimeout(IN socket_t sock, OUT size_t* seconds);
 static inline int socket_setreuseaddr(IN socket_t sock, IN int enable); // reuse addr. 
 static inline int socket_getreuseaddr(IN socket_t sock, OUT int* enable);
+static inline int socket_setreuseport(IN socket_t sock, IN int enable); // reuse port. 
+static inline int socket_getreuseport(IN socket_t sock, OUT int* enable);
 static inline int socket_setipv6only(IN socket_t sock, IN int ipv6_only); // 1-ipv6 only, 0-both ipv4 and ipv6
 static inline int socket_getdomain(IN socket_t sock, OUT int* domain); // get socket protocol address family(sock don't need bind)
+static inline int socket_setpriority(IN socket_t sock, IN int priority);
+static inline int socket_getpriority(IN socket_t sock, OUT int* priority);
+static inline int socket_settos(IN socket_t sock, IN int dscp); // ipv4 only
+static inline int socket_gettos(IN socket_t sock, OUT int* dscp); // ipv4 only
+static inline int socket_settclass(IN socket_t sock, IN int dscp); // ipv6 only
+static inline int socket_gettclass(IN socket_t sock, OUT int* dscp); // ipv6 only
+static inline int socket_setttl(IN socket_t sock, IN int ttl); // ipv4 only
+static inline int socket_getttl(IN socket_t sock, OUT int* ttl); // ipv4 only
+static inline int socket_setttl6(IN socket_t sock, IN int ttl); // ipv6 only
+static inline int socket_getttl6(IN socket_t sock, OUT int* ttl); // ipv6 only
+static inline int socket_setdontfrag(IN socket_t sock, IN int dontfrag); // ipv4 udp only
+static inline int socket_getdontfrag(IN socket_t sock, OUT int* dontfrag); // ipv4 udp only
+static inline int socket_setdontfrag6(IN socket_t sock, IN int dontfrag); // ipv6 udp only
+static inline int socket_getdontfrag6(IN socket_t sock, OUT int* dontfrag); // ipv6 udp only
+static inline int socket_setpktinfo(IN socket_t sock, IN int enable); // ipv4 udp only
+static inline int socket_setpktinfo6(IN socket_t sock, IN int enable); // ipv6 udp only
 
 // socket status
 // @return 0-ok, <0-socket_error(by socket_geterror())
+static inline int socket_setcork(IN socket_t sock, IN int cork); // 1-cork, 0-uncork
 static inline int socket_setnonblock(IN socket_t sock, IN int noblock); // non-block io, 0-block, 1-nonblock
 static inline int socket_setnondelay(IN socket_t sock, IN int nodelay); // non-delay io(Nagle Algorithm), 0-delay, 1-nodelay
 static inline int socket_getunread(IN socket_t sock, OUT size_t* size); // MSDN: Use to determine the amount of data pending in the network's input buffer that can be read from socket s
@@ -145,7 +174,7 @@ static inline int socket_getname(IN socket_t sock, OUT char ip[SOCKET_ADDRLEN], 
 static inline int socket_getpeername(IN socket_t sock, OUT char ip[SOCKET_ADDRLEN], OUT u_short* port);
 
 // socket utility
-static inline int socket_isip(IN const char* ip); // socket_isip("192.168.1.2") -> 0, socket_isip("www.google.com") -> -1
+static inline int socket_isip(IN const char* ip); // socket_isip("192.168.1.2") -> 1, socket_isip("www.google.com") -> 0
 static inline int socket_ipv4(IN const char* ipv4_or_dns, OUT char ip[SOCKET_ADDRLEN]);
 static inline int socket_ipv6(IN const char* ipv6_or_dns, OUT char ip[SOCKET_ADDRLEN]);
 
@@ -153,9 +182,11 @@ static inline int socket_addr_from_ipv4(OUT struct sockaddr_in* addr4, IN const 
 static inline int socket_addr_from_ipv6(OUT struct sockaddr_in6* addr6, IN const char* ip_or_dns, IN u_short port);
 static inline int socket_addr_from(OUT struct sockaddr_storage* ss, OUT socklen_t* len, IN const char* ipv4_or_ipv6_or_dns, IN u_short port);
 static inline int socket_addr_to(IN const struct sockaddr* sa, IN socklen_t salen, OUT char ip[SOCKET_ADDRLEN], OUT u_short* port);
-static inline int socket_addr_name(IN const struct sockaddr* sa, IN socklen_t salen, OUT char* host, IN size_t hostlen);
+static inline int socket_addr_name(IN const struct sockaddr* sa, IN socklen_t salen, OUT char* host, IN socklen_t hostlen);
 static inline int socket_addr_setport(IN struct sockaddr* sa, IN socklen_t salen, u_short port);
 static inline int socket_addr_is_multicast(IN const struct sockaddr* sa, IN socklen_t salen);
+static inline int socket_addr_compare(const struct sockaddr* first, const struct sockaddr* second); // 0-equal, other-don't equal
+static inline int socket_addr_len(const struct sockaddr* addr);
 
 static inline void socket_setbufvec(INOUT socket_bufvec_t* vec, IN int idx, IN void* ptr, IN size_t len);
 static inline void socket_getbufvec(IN const socket_bufvec_t* vec, IN int idx, OUT void** ptr, OUT size_t* len);
@@ -291,7 +322,7 @@ static inline int socket_send(IN socket_t sock, IN const void* buf, IN size_t le
 #if defined(OS_WINDOWS)
 	return send(sock, (const char*)buf, (int)len, flags);
 #else
-	return send(sock, buf, len, flags);
+	return (int)send(sock, buf, len, flags);
 #endif
 }
 
@@ -300,7 +331,7 @@ static inline int socket_recv(IN socket_t sock, OUT void* buf, IN size_t len, IN
 #if defined(OS_WINDOWS)
 	return recv(sock, (char*)buf, (int)len, flags);
 #else
-	return recv(sock, buf, len, flags);
+	return (int)recv(sock, buf, len, flags);
 #endif
 }
 
@@ -309,7 +340,7 @@ static inline int socket_sendto(IN socket_t sock, IN const void* buf, IN size_t 
 #if defined(OS_WINDOWS)
 	return sendto(sock, (const char*)buf, (int)len, flags, to, tolen);
 #else
-	return sendto(sock, buf, len, flags, to, tolen);
+	return (int)sendto(sock, buf, len, flags, to, tolen);
 #endif
 }
 
@@ -318,11 +349,11 @@ static inline int socket_recvfrom(IN socket_t sock, OUT void* buf, IN size_t len
 #if defined(OS_WINDOWS)
 	return recvfrom(sock, (char*)buf, (int)len, flags, from, fromlen);
 #else
-	return recvfrom(sock, buf, len, flags, from, fromlen);
+	return (int)recvfrom(sock, buf, len, flags, from, fromlen);
 #endif
 }
 
-static inline int socket_send_v(IN socket_t sock, IN const socket_bufvec_t* vec, IN size_t n, IN int flags)
+static inline int socket_send_v(IN socket_t sock, IN const socket_bufvec_t* vec, IN int n, IN int flags)
 {
 #if defined(OS_WINDOWS)
 	DWORD count = 0;
@@ -333,11 +364,11 @@ static inline int socket_send_v(IN socket_t sock, IN const socket_bufvec_t* vec,
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_iov = (struct iovec*)vec;
 	msg.msg_iovlen = n;
-	return sendmsg(sock, &msg, flags);
+	return (int)sendmsg(sock, &msg, flags);
 #endif
 }
 
-static inline int socket_recv_v(IN socket_t sock, IN socket_bufvec_t* vec, IN size_t n, IN int flags)
+static inline int socket_recv_v(IN socket_t sock, IN socket_bufvec_t* vec, IN int n, IN int flags)
 {
 #if defined(OS_WINDOWS)
 	DWORD count = 0;
@@ -348,11 +379,11 @@ static inline int socket_recv_v(IN socket_t sock, IN socket_bufvec_t* vec, IN si
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_iov = vec;
 	msg.msg_iovlen = n;
-	return recvmsg(sock, &msg, flags);
+	return (int)recvmsg(sock, &msg, flags);
 #endif
 }
 
-static inline int socket_sendto_v(IN socket_t sock, IN const socket_bufvec_t* vec, IN size_t n, IN int flags, IN const struct sockaddr* to, IN socklen_t tolen)
+static inline int socket_sendto_v(IN socket_t sock, IN const socket_bufvec_t* vec, IN int n, IN int flags, IN const struct sockaddr* to, IN socklen_t tolen)
 {
 #if defined(OS_WINDOWS)
 	DWORD count = 0;
@@ -365,16 +396,15 @@ static inline int socket_sendto_v(IN socket_t sock, IN const socket_bufvec_t* ve
 	msg.msg_namelen = tolen;
 	msg.msg_iov = (struct iovec*)vec;
 	msg.msg_iovlen = n;
-	return sendmsg(sock, &msg, flags);
+	return (int)sendmsg(sock, &msg, flags);
 #endif
 }
 
-static inline int socket_recvfrom_v(IN socket_t sock, IN socket_bufvec_t* vec, IN size_t n, IN int flags, IN struct sockaddr* from, IN socklen_t* fromlen)
+static inline int socket_recvfrom_v(IN socket_t sock, IN socket_bufvec_t* vec, IN int n, IN int flags, IN struct sockaddr* from, IN socklen_t* fromlen)
 {
 #if defined(OS_WINDOWS)
 	DWORD count = 0;
-	int r = WSARecvFrom(sock, vec, (DWORD)n, &count, (LPDWORD)&flags, from, fromlen, NULL, NULL);
-	return 0 == r ? (int)count : r;
+	return 0 == WSARecvFrom(sock, vec, (DWORD)n, &count, (LPDWORD)&flags, from, fromlen, NULL, NULL) ? (int)count : SOCKET_ERROR;
 #else
 	struct msghdr msg;
 	memset(&msg, 0, sizeof(msg));
@@ -382,7 +412,7 @@ static inline int socket_recvfrom_v(IN socket_t sock, IN socket_bufvec_t* vec, I
 	msg.msg_namelen = *fromlen;
 	msg.msg_iov = vec;
 	msg.msg_iovlen = n;
-	return recvmsg(sock, &msg, flags);
+	return (int)recvmsg(sock, &msg, flags);
 #endif
 }
 
@@ -419,7 +449,7 @@ static inline int socket_select_read(IN socket_t sock, IN int timeout)
 
 	tv.tv_sec = timeout/1000;
 	tv.tv_usec = (timeout%1000) * 1000;
-	return socket_select_readfds(sock+1, &fds, timeout<0?NULL:&tv);
+	return socket_select_readfds(0 /*sock+1*/, &fds, timeout<0?NULL:&tv);
 #else
 	int r;
 	struct pollfd fds;
@@ -448,7 +478,7 @@ static inline int socket_select_write(IN socket_t sock, IN int timeout)
 
 	tv.tv_sec = timeout/1000;
 	tv.tv_usec = (timeout%1000) * 1000;
-	return socket_select_writefds(sock+1, &fds, timeout<0?NULL:&tv);
+	return socket_select_writefds(0 /*sock+1*/, &fds, timeout<0?NULL:&tv);
 #else
 	int r;
 	struct pollfd fds;
@@ -490,7 +520,7 @@ static inline int socket_select_connect(IN socket_t sock, IN int timeout)
 	// MSDN > select function > Remarks:
 	//	writefds: If processing a connect call (nonblocking), connection has succeeded.
 	//	exceptfds: If processing a connect call (nonblocking), connection attempt failed.
-	r = socket_select(sock + 1, NULL, &wfds, &efds, timeout < 0 ? NULL : &tv);
+	r = socket_select(0 /*sock+1*/, NULL, &wfds, &efds, timeout < 0 ? NULL : &tv);
 	if (1 == r)
 	{
 		if (FD_ISSET(sock, &wfds))
@@ -679,6 +709,9 @@ static inline int socket_getrecvtimeout(IN socket_t sock, OUT size_t* seconds)
 
 static inline int socket_setreuseaddr(IN socket_t sock, IN int enable)
 {
+	// https://stackoverflow.com/questions/14388706/socket-options-so-reuseaddr-and-so-reuseport-how-do-they-differ-do-they-mean-t
+	// https://www.cnblogs.com/xybaby/p/7341579.html
+	// Windows: SO_REUSEADDR = SO_REUSEADDR + SO_REUSEPORT
 	return socket_setopt_bool(sock, SO_REUSEADDR, enable);
 }
 
@@ -686,6 +719,27 @@ static inline int socket_getreuseaddr(IN socket_t sock, OUT int* enable)
 {
 	return socket_getopt_bool(sock, SO_REUSEADDR, enable);
 }
+
+#if defined(SO_REUSEPORT)
+static inline int socket_setreuseport(IN socket_t sock, IN int enable)
+{
+	return socket_setopt_bool(sock, SO_REUSEPORT, enable);
+}
+
+static inline int socket_getreuseport(IN socket_t sock, OUT int* enable)
+{
+	return socket_getopt_bool(sock, SO_REUSEPORT, enable);
+}
+#endif
+
+#if defined(TCP_CORK)
+// 1-cork, 0-uncork
+static inline int socket_setcork(IN socket_t sock, IN int cork)
+{
+    //return setsockopt(sock, IPPROTO_TCP, TCP_NOPUSH, &cork, sizeof(cork));
+    return setsockopt(sock, IPPROTO_TCP, TCP_CORK, &cork, sizeof(cork));
+}
+#endif
 
 static inline int socket_setnonblock(IN socket_t sock, IN int noblock)
 {
@@ -728,6 +782,175 @@ static inline int socket_setipv6only(IN socket_t sock, IN int ipv6_only)
 	return setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&ipv6_only, sizeof(ipv6_only));
 }
 
+#if defined(OS_LINUX)
+static inline int socket_setpriority(IN socket_t sock, IN int priority)
+{
+	return setsockopt(sock, SOL_SOCKET, SO_PRIORITY, (const char*)&priority, sizeof(priority));
+}
+
+static inline int socket_getpriority(IN socket_t sock, OUT int* priority)
+{
+	socklen_t len;
+	len = sizeof(int);
+	return getsockopt(sock, SOL_SOCKET, SO_PRIORITY, (char*)priority, &len);
+}
+
+// ipv4 only
+static inline int socket_settos(IN socket_t sock, IN int dscp)
+{
+	// Winsock IP_TOS option is no longer available, The call will always be ignored silently.
+	// https://blogs.msdn.microsoft.com/wndp/2006/07/05/deprecating-old-qos-apis/
+
+	//https://en.wikipedia.org/wiki/Type_of_service
+	//http://www.bogpeople.com/networking/dscp.shtml
+	dscp <<= 2; // 0 - ECN (Explicit Congestion Notification)
+	return setsockopt(sock, IPPROTO_IP, IP_TOS, (const char*)&dscp, sizeof(dscp));
+}
+
+// ipv4 only
+static inline int socket_gettos(IN socket_t sock, OUT int* dscp)
+{
+	int r;
+	socklen_t len;
+	len = sizeof(int);
+	r = getsockopt(sock, IPPROTO_IP, IP_TOS, (char*)&dscp, &len);
+	if (0 == r)
+		*dscp >>= 2; // skip ECN (Explicit Congestion Notification)
+	return r;
+}
+
+// ipv6 only
+static inline int socket_settclass(IN socket_t sock, IN int dscp)
+{
+	dscp <<= 2; // 0 - ECN (Explicit Congestion Notification)
+	return setsockopt(sock, IPPROTO_IPV6, IPV6_TCLASS, (const char*)&dscp, sizeof(dscp));
+}
+
+// ipv6 only
+static inline int socket_gettclass(IN socket_t sock, OUT int* dscp)
+{
+	int r;
+	socklen_t len;
+	len = sizeof(int);
+	r = getsockopt(sock, IPPROTO_IPV6, IPV6_TCLASS, (char*)&dscp, &len);
+	if (0 == r)
+		*dscp >>= 2; // skip ECN (Explicit Congestion Notification)
+	return r;
+}
+#endif
+
+// ipv4 udp only
+static inline int socket_setdontfrag(IN socket_t sock, IN int dontfrag)
+{
+#if defined(OS_WINDOWS)
+	DWORD v = (DWORD)dontfrag;
+	return setsockopt(sock, IPPROTO_IP, IP_DONTFRAGMENT, (const char*)&v, sizeof(DWORD));
+#elif defined(OS_LINUX)
+	dontfrag = dontfrag ? IP_PMTUDISC_DO : IP_PMTUDISC_WANT;
+	return setsockopt(sock, IPPROTO_IP, IP_MTU_DISCOVER, &dontfrag, sizeof(dontfrag));
+#else
+	return -1;
+#endif
+}
+
+// ipv4 udp only
+static inline int socket_getdontfrag(IN socket_t sock, OUT int* dontfrag)
+{
+	int r = -1;
+#if defined(OS_WINDOWS)
+	DWORD v;
+	int n = sizeof(DWORD);
+	r = getsockopt(sock, IPPROTO_IP, IP_DONTFRAGMENT, (char*)&v, &n);
+	*dontfrag = (int)v;
+#elif defined(OS_LINUX)
+	socklen_t n = sizeof(int);
+	r = getsockopt(sock, IPPROTO_IP, IP_MTU_DISCOVER, dontfrag, &n);
+	*dontfrag = IP_PMTUDISC_DO == *dontfrag ? 1 : 0;
+#endif
+	return r;
+}
+
+// ipv6 udp only
+static inline int socket_setdontfrag6(IN socket_t sock, IN int dontfrag)
+{
+#if defined(OS_WINDOWS)
+	DWORD v = (DWORD)(dontfrag ? IP_PMTUDISC_DO : IP_PMTUDISC_DONT);
+	return setsockopt(sock, IPPROTO_IPV6, IPV6_MTU_DISCOVER, (const char*)&v, sizeof(DWORD));
+#elif defined(OS_LINUX)
+	dontfrag = dontfrag ? IP_PMTUDISC_DO : IP_PMTUDISC_WANT;
+	return setsockopt(sock, IPPROTO_IPV6, IPV6_MTU_DISCOVER, &dontfrag, sizeof(dontfrag));
+#else
+	return -1;
+#endif
+}
+
+// ipv6 udp only
+static inline int socket_getdontfrag6(IN socket_t sock, OUT int* dontfrag)
+{
+	int r = -1;
+#if defined(OS_WINDOWS)
+	DWORD v;
+	int n = sizeof(DWORD);
+	r = getsockopt(sock, IPPROTO_IPV6, IPV6_MTU_DISCOVER, (char*)&v, &n);
+	*dontfrag = IP_PMTUDISC_DO == v ? 1 : 0;;
+#elif defined(OS_LINUX)
+	socklen_t n = sizeof(int);
+	r = getsockopt(sock, IPPROTO_IPV6, IPV6_MTU_DISCOVER, dontfrag, &n);
+	*dontfrag = IP_PMTUDISC_DO == *dontfrag ? 1 : 0;
+#endif
+	return r;
+}
+
+// ipv4 udp only
+static inline int socket_setpktinfo(IN socket_t sock, IN int enable)
+{
+#if defined(OS_WINDOWS)
+	BOOL v = enable ? TRUE : FALSE;
+	return setsockopt(sock, IPPROTO_IP, IP_PKTINFO, (const char*)&v, sizeof(v));
+#elif defined(OS_LINUX)
+	return setsockopt(sock, IPPROTO_IP, IP_PKTINFO, &enable, sizeof(enable));
+#else
+	return -1;
+#endif
+}
+
+// ipv6 udp only
+static inline int socket_setpktinfo6(IN socket_t sock, IN int enable)
+{
+#if defined(OS_WINDOWS)
+	BOOL v = enable ? TRUE : FALSE;
+	return setsockopt(sock, IPPROTO_IPV6, IPV6_PKTINFO, (const char*)&v, sizeof(v));
+#elif defined(OS_LINUX)
+	return setsockopt(sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &enable, sizeof(enable));
+#else
+	return -1;
+#endif
+}
+
+static inline int socket_setttl(IN socket_t sock, IN int ttl)
+{
+	return setsockopt(sock, IPPROTO_IP, IP_TTL, (const char*)&ttl, sizeof(ttl));
+}
+
+static inline int socket_getttl(IN socket_t sock, OUT int* ttl)
+{
+	socklen_t len;
+	len = sizeof(*ttl);
+	return getsockopt(sock, IPPROTO_IP, IP_TTL, (char*)ttl, &len);
+}
+
+static inline int socket_setttl6(IN socket_t sock, IN int ttl)
+{
+	return setsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, (const char*)&ttl, sizeof(ttl));
+}
+
+static inline int socket_getttl6(IN socket_t sock, OUT int* ttl)
+{
+	socklen_t len;
+	len = sizeof(*ttl);
+	return getsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, (char*)ttl, &len);
+}
+
 static inline int socket_getdomain(IN socket_t sock, OUT int* domain)
 {
 	int r;
@@ -737,9 +960,15 @@ static inline int socket_getdomain(IN socket_t sock, OUT int* domain)
 	r = getsockopt(sock, SOL_SOCKET, SO_PROTOCOL_INFOW, (char*)&protocolInfo, &len);
 	if (0 == r)
 		*domain = protocolInfo.iAddressFamily;
-#else
+#elif defined(OS_LINUX) 
 	socklen_t len = sizeof(domain);
 	r = getsockopt(sock, SOL_SOCKET, SO_DOMAIN, (char*)domain, &len);
+#else
+    struct sockaddr_storage addr;
+    socklen_t addrlen = sizeof(addr);
+    memset(&addr, 0, sizeof(addr));
+    r = getsockname(sock, (struct sockaddr*)&addr, &addrlen);
+    *domain = addr.ss_family;
 #endif
 	return r;
 }
@@ -765,23 +994,24 @@ static inline int socket_getpeername(IN socket_t sock, OUT char ip[SOCKET_ADDRLE
 	return socket_addr_to((struct sockaddr*)&addr, addrlen, ip, port);
 }
 
+/// @return 1-ok, 0-error
 static inline int socket_isip(IN const char* ip)
 {
 #if 1
 	struct sockaddr_storage addr;
 	if(1 != inet_pton(AF_INET, ip, &((struct sockaddr_in*)&addr)->sin_addr) 
 		&& 1 != inet_pton(AF_INET6, ip, &((struct sockaddr_in6*)&addr)->sin6_addr))
-		return -1;
-	return 0;
+		return 0;
+	return 1;
 #else
 	struct addrinfo hints, *addr;
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_flags = AI_NUMERICHOST /*| AI_V4MAPPED | AI_ADDRCONFIG*/;
 	if (0 != getaddrinfo(ip, NULL, &hints, &addr))
-		return -1;
+		return 0;
 	freeaddrinfo(&addr);
 #endif
-	return 0;
+	return 1;
 }
 
 static inline int socket_ipv4(IN const char* ipv4_or_dns, OUT char ip[SOCKET_ADDRLEN])
@@ -832,7 +1062,7 @@ static inline int socket_addr_from_ipv4(OUT struct sockaddr_in* addr4, IN const 
 		return r;
 
 	// fixed ios getaddrinfo don't set port if node is ipv4 address
-	socket_addr_setport(addr->ai_addr, addr->ai_addrlen, port);
+	socket_addr_setport(addr->ai_addr, (socklen_t)addr->ai_addrlen, port);
 	assert(sizeof(struct sockaddr_in) == addr->ai_addrlen);
 	memcpy(addr4, addr->ai_addr, addr->ai_addrlen);
 	freeaddrinfo(addr);
@@ -853,7 +1083,7 @@ static inline int socket_addr_from_ipv6(OUT struct sockaddr_in6* addr6, IN const
 		return r;
 
 	// fixed ios getaddrinfo don't set port if node is ipv4 address
-	socket_addr_setport(addr->ai_addr, addr->ai_addrlen, port);
+	socket_addr_setport(addr->ai_addr, (socklen_t)addr->ai_addrlen, port);
 	assert(sizeof(struct sockaddr_in6) == addr->ai_addrlen);
 	memcpy(addr6, addr->ai_addr, addr->ai_addrlen);
 	freeaddrinfo(addr);
@@ -871,10 +1101,10 @@ static inline int socket_addr_from(OUT struct sockaddr_storage* ss, OUT socklen_
 		return r;
 
 	// fixed ios getaddrinfo don't set port if node is ipv4 address
-	socket_addr_setport(addr->ai_addr, addr->ai_addrlen, port);
+	socket_addr_setport(addr->ai_addr, (socklen_t)addr->ai_addrlen, port);
 	assert(addr->ai_addrlen <= sizeof(struct sockaddr_storage));
 	memcpy(ss, addr->ai_addr, addr->ai_addrlen);
-	*len = addr->ai_addrlen;
+	if(len) *len = (socklen_t)addr->ai_addrlen;
 	freeaddrinfo(addr);
 	return 0;
 }
@@ -886,14 +1116,14 @@ static inline int socket_addr_to(IN const struct sockaddr* sa, IN socklen_t sale
 		struct sockaddr_in* in = (struct sockaddr_in*)sa;
 		assert(sizeof(struct sockaddr_in) == salen);
 		inet_ntop(AF_INET, &in->sin_addr, ip, SOCKET_ADDRLEN);
-		*port = ntohs(in->sin_port);
+		if(port) *port = ntohs(in->sin_port);
 	}
 	else if (AF_INET6 == sa->sa_family)
 	{
 		struct sockaddr_in6* in6 = (struct sockaddr_in6*)sa;
 		assert(sizeof(struct sockaddr_in6) == salen);
 		inet_ntop(AF_INET6, &in6->sin6_addr, ip, SOCKET_ADDRLEN);
-		*port = ntohs(in6->sin6_port);
+		if (port) *port = ntohs(in6->sin6_port);
 	}
 	else
 	{
@@ -926,7 +1156,7 @@ static inline int socket_addr_setport(IN struct sockaddr* sa, IN socklen_t salen
 	return 0;
 }
 
-static inline int socket_addr_name(IN const struct sockaddr* sa, IN socklen_t salen, OUT char* host, IN size_t hostlen)
+static inline int socket_addr_name(IN const struct sockaddr* sa, IN socklen_t salen, OUT char* host, IN socklen_t hostlen)
 {
 	return getnameinfo(sa, salen, host, hostlen, NULL, 0, 0);
 }
@@ -951,6 +1181,50 @@ static inline int socket_addr_is_multicast(IN const struct sockaddr* sa, IN sock
 	}
 
 	return 0;
+}
+
+/// RECOMMAND: compare with struct sockaddr_storage
+/// @return 0-equal, other-don't equal
+static inline int socket_addr_compare(const struct sockaddr* sa, const struct sockaddr* sb)
+{
+	if(sa->sa_family != sb->sa_family)
+		return sa->sa_family - sb->sa_family;
+
+	// https://opensource.apple.com/source/postfix/postfix-197/postfix/src/util/sock_addr.c
+	switch (sa->sa_family)
+	{
+	case AF_INET:
+		return ((struct sockaddr_in*)sa)->sin_port==((struct sockaddr_in*)sb)->sin_port 
+			&& 0 == memcmp(&((struct sockaddr_in*)sa)->sin_addr, &((struct sockaddr_in*)sb)->sin_addr, sizeof(struct in_addr))
+			? 0 : -1;
+	case AF_INET6:
+		return ((struct sockaddr_in6*)sa)->sin6_port == ((struct sockaddr_in6*)sb)->sin6_port 
+			&& 0 == memcmp(&((struct sockaddr_in6*)sa)->sin6_addr, &((struct sockaddr_in6*)sb)->sin6_addr, sizeof(struct in6_addr))
+			? 0 : -1;
+
+#if defined(OS_LINUX) || defined(OS_MAC) // Windows build 17061
+	// https://blogs.msdn.microsoft.com/commandline/2017/12/19/af_unix-comes-to-windows/
+	case AF_UNIX:	return memcmp(sa, sb, sizeof(struct sockaddr_un));
+#endif
+	default:		return -1;
+	}
+}
+
+static inline int socket_addr_len(const struct sockaddr* addr)
+{
+	switch (addr->sa_family)
+	{
+	case AF_INET:	return sizeof(struct sockaddr_in);
+	case AF_INET6:	return sizeof(struct sockaddr_in6);
+#if defined(OS_LINUX) || defined(OS_MAC)// Windows build 17061
+		// https://blogs.msdn.microsoft.com/commandline/2017/12/19/af_unix-comes-to-windows/
+	case AF_UNIX:	return sizeof(struct sockaddr_un);
+#endif
+#if defined(AF_NETLINK)
+	//case AF_NETLINK:return sizeof(struct sockaddr_nl);
+#endif
+	default: return 0;
+	}
 }
 
 static inline void socket_setbufvec(INOUT socket_bufvec_t* vec, IN int idx, IN void* ptr, IN size_t len)
